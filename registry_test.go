@@ -131,6 +131,40 @@ func TestServiceLocator_InjectFields(t *testing.T) {
 	assert.Equal(t, "ServiceByName", injectInto.ServiceByName.name)
 }
 
+func TestServiceLocator_InjectFieldsPopulate(t *testing.T) {
+	type Injected struct {
+		name string
+	}
+
+	type InjectInto struct {
+		ServiceByType *Injected `inject:""`
+		ServiceByName *Injected `inject:"ServiceByName"`
+	}
+
+	injectInto := InjectInto{}
+	registry := inject.NewRegistry()
+	if !assert.NoError(t, registry.Bind(&injectInto)) {
+		return
+	}
+	if !assert.NoError(t, registry.Bind(&Injected{name: "ServiceByType"})) {
+		return
+	}
+	if !assert.NoError(t, registry.BindWithName("ServiceByName", &Injected{name: "ServiceByName"})) {
+		return
+	}
+
+	if !assert.NoError(t, registry.Populate()) {
+		return
+	}
+
+	if !assert.NotNil(t, injectInto.ServiceByType) {
+		return
+	}
+
+	assert.Equal(t, "ServiceByType", injectInto.ServiceByType.name)
+	assert.Equal(t, "ServiceByName", injectInto.ServiceByName.name)
+}
+
 func TestServiceLocator_SimpleInjectInvalidPointer(t *testing.T) {
 	registry := inject.NewRegistry()
 	if !assert.NoError(t, registry.Bind("Hello")) {

@@ -51,12 +51,24 @@ func (r *Registry) Bind(service interface{}) error {
 	return r.BindWithType(reflect.TypeOf(service), service)
 }
 
+func (r *Registry) MustBind(service interface{}) {
+	if err := r.BindWithType(reflect.TypeOf(service), service); err != nil {
+		panic(err)
+	}
+}
+
 func (r *Registry) BindWithType(expectedType reflect.Type, entry interface{}) error {
 	actualType := reflect.TypeOf(entry)
 	if !r.isAssignableFrom(expectedType, actualType) {
 		return ErrInvalidInjectionType
 	}
 	return r.BindWithName(expectedType.String(), entry)
+}
+
+func (r *Registry) MustBindWithType(expectedType reflect.Type, entry interface{}) {
+	if err := r.BindWithType(expectedType, entry); err != nil {
+		panic(err)
+	}
 }
 
 func (r *Registry) BindWithName(name string, entry interface{}) error {
@@ -128,6 +140,9 @@ func (r *Registry) isAssignableFrom(expectedType, actualType reflect.Type) bool 
 	return false
 }
 
+// Inject injects the registered bindings into the targets.
+// Internally Inject calls GetByType, so there need to be a binding registered for each passed type.
+// Caller is the calling struct, this is passed to the producers if there are any.
 func (r *Registry) InjectFrom(caller interface{}, targets ...interface{}) error {
 	for _, target := range targets {
 		targetPtr := reflect.TypeOf(target)
@@ -135,7 +150,7 @@ func (r *Registry) InjectFrom(caller interface{}, targets ...interface{}) error 
 			return ErrInvalidInjectionPoint
 		}
 
-		actualValue, err := r.getByName(targetPtr.Elem().String(), caller, targetPtr.Elem())
+		actualValue, err := r.getByType(targetPtr.Elem(), caller)
 		if err != nil {
 			return err
 		}
@@ -150,12 +165,21 @@ func (r *Registry) InjectFrom(caller interface{}, targets ...interface{}) error 
 	return nil
 }
 
-func (r *Registry) Inject(services ...interface{}) error {
-	return r.InjectFrom(nil, services...)
+// Inject injects the registered bindings into the targets.
+// Internally Inject calls GetByType, so there need to be a binding registered for each passed type.
+func (r *Registry) Inject(targets ...interface{}) error {
+	return r.InjectFrom(nil, targets...)
 }
 
+// InjectFields injects the registered bindings into the annotated fields of target.
+// Therefore target must be a pointer to a struct, containing exported fields annotated with 'inject'.
 func (r *Registry) InjectFields(target interface{}) error {
-	targetType := reflect.TypeOf(target).Elem()
+	targetType := reflect.TypeOf(target)
+	if targetType.Kind() != reflect.Ptr || targetType.Elem().Kind() != reflect.Struct {
+		return ErrInvalidInjectionPoint
+	}
+
+	targetType = targetType.Elem()
 	targetValue := reflect.ValueOf(target).Elem()
 	for i := 0; i < targetType.NumField(); i++ {
 		field := targetType.Field(i)
@@ -185,21 +209,24 @@ func (r *Registry) InjectFields(target interface{}) error {
 	return nil
 }
 
+// Populate calls InjectFields for every registered struct and Init() on all registered bindings,
+// implementing the inject.Service interface.
 func (r *Registry) Populate() error {
 	if r.populated {
 		r.log.Warn("Service locator is already populated")
 		return nil
 	}
-	for serviceName, entry := range r.entries {
+	for _, entry := range r.entries {
+		serviceType := reflect.TypeOf(entry.source)
+		if serviceType.Kind() == reflect.Ptr && serviceType.Elem().Kind() == reflect.Struct {
+			if err := r.InjectFields(entry.source); err != nil {
+				return err
+			}
+		}
+
 		service, ok := entry.source.(Service)
 		if ok {
-			r.log.WithFields(logrus.Fields{
-				"serviceName": serviceName,
-			}).Debug("Populating service")
 			if err := service.Init(r); err != nil {
-				r.log.WithFields(logrus.Fields{
-					"serviceName": serviceName,
-				}).WithError(err).Error("Error populating service")
 				return err
 			}
 		}
